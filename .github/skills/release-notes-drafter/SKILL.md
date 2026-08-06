@@ -32,69 +32,26 @@ JSON skipped PRs.
 
 ---
 
-## Execution model
+## Tool mapping
 
-**Primary — GitHub MCP server (when `.vscode/mcp.json` is configured):** Use MCP tools (`list_pull_requests`, `get_pull_request`, `get_pull_request_files`) directly. The PAT is read from the `GITHUB_TOKEN` environment variable — no interactive PAT prompt required.
+All GitHub data is fetched via the **GitHub MCP server** (`@modelcontextprotocol/server-github`). Auth is handled by the MCP connection — no PAT prompt, no Python script, no terminal commands.
 
-**Fallback — Python script (when MCP is unavailable):** Run the **static `_fetch_prs.py` script** that ships alongside this skill. The script is never created or modified at runtime — all user-supplied values are passed as positional CLI arguments. No file is written per-repo or per-run.
-
-- Use `python` (or `python3`) — never PowerShell, `curl`, or any shell HTTP command.
-- The script uses only Python stdlib (`urllib.request`, `json`, `re`, `datetime`) — no `pip install`.
-- Run it once via `execute` (mode=sync). No further terminal calls after that.
-- Do not echo the PAT in chat or in terminal output.
-
-### Invocation
-
-Resolve `<SKILL_DIR>` as the directory containing this SKILL.md file, then run:
-
-```
-python "<SKILL_DIR>/_fetch_prs.py" <PAT> <OWNER> <REPO> <SINCE> <UNTIL> [BASE]
-```
-
-| Argument | Source | Example |
-|---|---|---|
-| `PAT` | User-provided token | `ghp_…` |
-| `OWNER` | User-provided org/user | `onetakeda` |
-| `REPO` | User-provided repository name | `devx-platform` |
-| `SINCE` | Derived from user's time window | `2026-07-01T00:00:00Z` |
-| `UNTIL` | Derived from user's time window | `2026-07-31T23:59:59Z` |
-| `BASE` | Optional branch, defaults to `main` | `main` |
-
-The script prints a single JSON array to stdout. The skill reads that output and proceeds directly to classification → skip rules → flagging → output generation with no further terminal calls.
-
-### REST endpoint reference
-
-| Endpoint | Used by |
+| MCP tool | Purpose |
 |---|---|
-| `GET /repos/{owner}/{repo}/pulls?state=closed&base={branch}&per_page=100` | `paginate()` — list merged PRs |
-| `GET /repos/{owner}/{repo}/pulls/{pull_number}/files?per_page=100` | `get_files()` — file-level diff |
-| `GET /orgs/{org}/members/{username}` | `is_member()` — org membership |
-| `GET /search/issues?q=is:pr+is:merged+repo:…` | Fallback only if primary returns 0 PRs |
+| `list_pull_requests(owner, repo, state="closed", base=branch)` | List merged PRs; filter by `merged_at` within window |
+| `get_pull_request(owner, repo, pull_number)` | PR detail — title, body, author, labels, milestone, merge date |
+| `get_pull_request_files(owner, repo, pull_number)` | File-level diff — path, status, additions, deletions |
+| `search_issues(q="is:pr is:merged repo:owner/repo merged:since..until")` | Fallback when primary returns 0 results |
+| `list_org_members(org)` / `get_org_member(org, username)` | Resolve org membership for external-contributor detection |
 
 ---
 
 ## Inputs
 
-### GitHub Personal Access Token (PAT)
+### Authentication
 
-The PAT is resolved **silently** — never ask the user to paste a token in chat.
-
-Resolution order:
-1. Run `python -c "import os; print(os.environ.get('GITHUB_PERSONAL_ACCESS_TOKEN',''))"` — if non-empty, use it.
-2. Read `.vscode/mcp.json` via `read_file` — if `GITHUB_PERSONAL_ACCESS_TOKEN` is a literal value (not `${…}`), extract it.
-3. If both fail, tell the user:
-   > **PAT not found.** Please set the `GITHUB_PERSONAL_ACCESS_TOKEN` environment variable:
-   >
-   > **Windows (PowerShell — run once, persists across sessions):**
-   > ```powershell
-   > [System.Environment]::SetEnvironmentVariable('GITHUB_PERSONAL_ACCESS_TOKEN','<your-token>','User')
-   > ```
-   > Then **restart VS Code** so the new env var is picked up.
-   >
-   > Required scopes: `repo` (or `public_repo`) + `read:org`.
-   > If your org uses SAML SSO, authorize the token at github.com → Settings → Personal access tokens → Configure SSO.
-   >
-   > Do **not** paste the token in chat.
+No PAT prompt. Auth is handled entirely by the MCP server configured in `.vscode/mcp.json`.
+If MCP returns a 401/403, tell the user to check their `GITHUB_PERSONAL_ACCESS_TOKEN` env var and restart VS Code.
 
 ### Scope inputs
 
@@ -115,17 +72,17 @@ Also confirm the **repository** (`owner/repo` format, e.g. `onetakeda/my-service
 
 ## Workflow
 
-1. **Collect inputs** — Silently resolve the PAT (see Inputs section). Collect the repository and time window / ref range from the user if not already provided. This is the **only** user interaction before data is fetched — the PAT is **never** requested in chat.
+1. **Collect scope** — Ask the user once for the repository (`owner/repo`) and time window / ref range if not already provided. This is the **only** user interaction in the workflow.
 
-2. **Fetch PRs** — Run the Python helper exactly **once** via `execute` (mode=sync). This is the **only terminal command** in the entire workflow — zero additional terminal calls are made. No PowerShell is used.
+2. **Fetch PRs via MCP** — Call `list_pull_requests(owner, repo, state="closed", base=branch)`. Filter results to PRs where `merged_at` is within the requested window. If result is empty, retry with `search_issues` fallback.
 
-3. **Confirm scope** — Print once before drafting:
-   > `Analyzing {N} PRs merged between {start} and {end} (or: between {base-ref} and {head-ref})…`
-   If N is 0, halt and ask the user to verify the range or time-window.
+3. **Enrich each PR via MCP** — For each PR number call `get_pull_request` (title, body, author, labels, milestone, merge date) and `get_pull_request_files` (path, status, additions, deletions). Resolve org membership via `get_org_member`.
 
-4. **Parse PR data** — Each element contains `number`, `title`, `body`, `author`, `mergedAt`, `labels`, `files`, `orgMember`.
+4. **Confirm scope** — Print once:
+   > `Analyzing {N} PRs merged between {start} and {end}…`
+   If N is 0, halt and ask the user to verify the range.
 
-5. **Check deployment-sensitive files** — Scan all changed file paths for the patterns in the Deployment Notes flag table. If any match, ask the user **once** whether to include a `🗒️ Deployment Notes` section.
+5. **Check deployment-sensitive files** — Scan changed paths for migrations, dependency manifests, config files, API schemas. If any match, ask the user **once** whether to include a `🗒️ Deployment Notes` section.
 
 6. **Classify** each PR into taxonomy (see Classification section).
 

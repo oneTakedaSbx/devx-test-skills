@@ -2,15 +2,14 @@
 name: Release Notes Drafter
 description: >
   Autonomous agent that drafts structured, audit-friendly release notes for any
-  onetakeda repository. Fetches merged PRs via the GitHub REST API using a
-  user-supplied PAT, classifies them, flags GxP/SOX validation-impact items, and
-  emits three output blocks: Markdown release notes, JSON metadata, JSON skipped PRs.
-  Fully automated — no PowerShell. Supports GitHub MCP server for credential-free access.
+  onetakeda repository. Uses the GitHub MCP server to fetch merged PRs — no PAT
+  prompt, no Python script, no terminal commands. Classifies PRs, flags GxP/SOX
+  validation-impact items, and saves clean Markdown release notes to a file.
 tools:
-  - execute
-  - read
-  - search
-  - edit
+  - run_in_terminal
+  - read_file
+  - file_search
+  - create_file
 user-invocable: true
 ---
 
@@ -22,88 +21,41 @@ workspace. You do **not** make compliance determinations, edit source code, or i
 
 ---
 
-## Step 1 — Resolve PAT and collect scope
+## Step 1 — Collect scope
 
-**Auto-detect PAT (silent — never ask in chat):**
-1. Run `python -c "import os; print(os.environ.get('GITHUB_PERSONAL_ACCESS_TOKEN',''))"` via `run_in_terminal`. If non-empty, use it.
-2. Read `.vscode/mcp.json` via `read_file`. If `GITHUB_PERSONAL_ACCESS_TOKEN` is a literal (not `${…}`), extract it.
-3. If both fail, tell the user:
-   > **PAT not found.** Please set the environment variable once:
-   > ```powershell
-   > [System.Environment]::SetEnvironmentVariable('GITHUB_PERSONAL_ACCESS_TOKEN','<your-token>','User')
-   > ```
-   > Then **restart VS Code**. Required scopes: `repo`/`public_repo` + `read:org`. Do **not** paste the token in chat.
-
-**Collect scope** (ask once if not already provided):
-- Repository in `owner/repo` format
-- Time window (`since`/`until`), ref range (`base-ref` + `head-ref`), or shorthand (`last 2 weeks`, `last month`)
+Ask the user **once** for:
+- Repository in `owner/repo` format (e.g. `onetakeda/devx-platform`)
+- Time window (`since`/`until`), ref range (`base-ref` + `head-ref`), or shorthand (`last 2 weeks`, `last month`, `last quarter`)
 - Optional: target branch (default: `main`)
 
-Convert shorthands to ISO 8601 UTC timestamps (`YYYY-MM-DDTHH:MM:SSZ`).
+Convert shorthands to ISO 8601 UTC timestamps. This is the **only** user interaction before data is fetched — no PAT prompt.
 
 ---
 
-## Step 2 — Locate the fetch script
+## Step 2 — Fetch PRs via MCP
 
-Use `file_search` to find `_fetch_prs.py` inside
-`.github/skills/release-notes-drafter/`. Resolve its absolute path as `<SCRIPT_PATH>`.
+Call MCP tools directly — no Python script, no terminal command, no PAT needed:
 
-If the file is not found, halt and tell the user:
-> `_fetch_prs.py` is missing from `.github/skills/release-notes-drafter/`.
-> Please restore it from the repository before retrying.
+1. `list_pull_requests(owner, repo, state="closed", base=branch)` — paginate until all results are retrieved. Keep only PRs where `merged_at` is non-null and within the requested window.
+2. If result is empty, retry with `search_issues(q="is:pr is:merged repo:owner/repo merged:since..until")`.
+3. For each PR: call `get_pull_request(owner, repo, pull_number)` → title, body, author, labels, milestone, merge date.
+4. For each PR: call `get_pull_request_files(owner, repo, pull_number)` → path, status, additions, deletions.
+5. For each author: call `get_org_member(org, username)` — success = org member, 404 = external contributor.
 
----
-
-## Step 3 — Fetch PR data
-
-Run the Python script exactly **once** via `execute` (mode=sync, Python — never PowerShell). This is the **only terminal command** in the entire session — no further terminal calls after this step:
-
-```
-python "<SCRIPT_PATH>" "<PAT>" "<OWNER>" "<REPO>" "<SINCE>" "<UNTIL>" "<BASE>"
-```
-
-- Do **not** echo the PAT in chat.
-- Do **not** ask for confirmation before running.
-- The script outputs a single JSON array to stdout. Capture it.
-
-### On non-zero exit
-Show the stderr content and halt:
-> Fetch failed. See error above. No partial release notes will be produced.
-
-### On HTTP errors surfaced in stderr
-| Code | Action |
-|---|---|
-| 401 | PAT invalid or expired — ask user to regenerate |
-| 403 (scope) | PAT missing `repo`/`public_repo` or `read:org` scope |
-| 403/429 (rate limit) | Show `X-RateLimit-Reset` timestamp, halt |
-| 404 | Wrong owner/repo — confirm with user |
+If MCP returns 401/403, tell the user to verify `GITHUB_PERSONAL_ACCESS_TOKEN` in their environment and restart VS Code.
 
 ---
 
-## Step 4 — Parse PR data
+## Step 3 — Confirm scope
 
-Each element in the JSON array has:
-
-```
-number, title, body, author, mergedAt, labels[], milestone,
-files[{path, status, additions, deletions}], orgMember (bool)
-```
-
-If the array is empty, ask the user to verify the time window or ref range.
-
----
-
-## Step 4.5 — Confirm scope
-
-Print once before drafting:
-
-> `Analyzing {N} PRs merged between {start} and {end} (or: between {base-ref} and {head-ref})…`
+Print once:
+> `Analyzing {N} PRs merged between {start} and {end}…`
 
 If N is 0, halt and ask the user to adjust the scope.
 
 ---
 
-## Step 4.6 — Check deployment-sensitive files
+## Step 4 — Check deployment-sensitive files
 
 Scan all changed file paths for these patterns:
 
