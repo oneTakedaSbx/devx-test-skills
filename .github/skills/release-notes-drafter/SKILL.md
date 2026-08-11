@@ -10,7 +10,7 @@ description: >
   Drafting tool only — does not make compliance determinations.
 owner: DevX (ICC / DD&T)
 scope: org-wide
-version: 5.0.0
+version: 6.0.0
 contact: devx@takeda.com
 ---
 
@@ -27,15 +27,16 @@ JSON skipped PRs.
 
 - Make compliance or validation determinations.
 - Edit source code.
-- Call external systems beyond GitHub.
+- Call external systems beyond GitHub and Atlassian/Jira.
 - Invent PR numbers, authors, dates, or issue links.
 
 ---
 
 ## Tool mapping
 
-All GitHub data is fetched via the **GitHub MCP server** (`@modelcontextprotocol/server-github`). Auth is handled by the MCP connection — no PAT prompt, no Python script, no terminal commands.
+GitHub and Jira data are fetched via their respective MCP servers. Auth is handled by the MCP connections — no PAT prompt, no Python script, no terminal commands.
 
+### GitHub MCP (`@modelcontextprotocol/server-github`)
 | MCP tool | Purpose |
 |---|---|
 | `list_pull_requests(owner, repo, state="closed", base=branch)` | List merged PRs; filter by `merged_at` within window |
@@ -43,6 +44,12 @@ All GitHub data is fetched via the **GitHub MCP server** (`@modelcontextprotocol
 | `get_pull_request_files(owner, repo, pull_number)` | File-level diff — path, status, additions, deletions |
 | `search_issues(q="is:pr is:merged repo:owner/repo merged:since..until")` | Fallback when primary returns 0 results |
 | `list_org_members(org)` / `get_org_member(org, username)` | Resolve org membership for external-contributor detection |
+
+### Atlassian MCP (`atlassian/atlassian-mcp-server` v1.1.1 — HTTP `https://mcp.atlassian.com/v1/mcp`)
+| MCP tool | Purpose |
+|---|---|
+| `mcp_atlassian-mcp_getJiraIssue(issueIdOrKey)` | Fetch issue — title, description, acceptance criteria, sprint, epic, and current status |
+| `mcp_atlassian-mcp_searchJiraIssuesUsingJql(jql)` | Look up epic or sprint context for a batch of ticket keys |
 
 ---
 
@@ -72,11 +79,15 @@ Also confirm the **repository** (`owner/repo` format, e.g. `onetakeda/my-service
 
 ## Workflow
 
-1. **Collect scope** — Ask the user once for the repository (`owner/repo`) and time window / ref range if not already provided. This is the **only** user interaction in the workflow.
+1. **Collect scope** — Ask the user once for the repository (`owner/repo`) and time window / ref range if not already provided. The only other permitted user interaction is the Deployment Notes confirmation in step 5.
 
 2. **Fetch PRs via MCP** — Call `list_pull_requests(owner, repo, state="closed", base=branch)`. Filter results to PRs where `merged_at` is within the requested window. If result is empty, retry with `search_issues` fallback.
 
-3. **Enrich each PR via MCP** — For each PR number call `get_pull_request` (title, body, author, labels, milestone, merge date) and `get_pull_request_files` (path, status, additions, deletions). Resolve org membership via `get_org_member`.
+3. **Enrich each PR via MCP** — For each PR number:
+   - Call `get_pull_request` (title, body, author, labels, milestone, merge date).
+   - Call `get_pull_request_files` (path, status, additions, deletions).
+   - Resolve org membership via `get_org_member`.
+   - **Jira enrichment:** Extract any `[A-Z]+-[0-9]+` key from the PR title or body. For each key found, call `mcp_atlassian-mcp_getJiraIssue(issueIdOrKey=key)` to retrieve the story title, description, acceptance criteria, and current status in a single call. If the returned status is not Done/Closed, flag the PR as `[???]` with reason "Linked Jira ticket still open". If the Atlassian MCP is unavailable, skip silently and set `jiraEnriched: false` in JSON output.
 
 4. **Confirm scope** — Print once:
    > `Analyzing {N} PRs merged between {start} and {end}…`
@@ -100,6 +111,14 @@ Also confirm the **repository** (`owner/repo` format, e.g. `onetakeda/my-service
     Write **only Block 1 (Markdown release notes)** into the file — do not include the JSON blocks.
     Confirm in chat with: `Release notes saved to release-notes-<REPO>-<LABEL>.md.`
     Do **not** re-print the full content in chat.
+
+11. **Offer next steps** — After confirming the file save, offer these three options in a single message:
+    > Would you like me to:
+    > 1. Convert this to a **GitHub Release body** (strip emoji, reformat as plain prose)
+    > 2. Generate a **5-sentence stakeholder email** summary
+    > 3. Export as a **Jira comment block** (plain text, ticket-linked)
+
+    Wait for user selection. Do not proceed automatically.
 
 ---
 
@@ -137,6 +156,18 @@ Every PR goes into **exactly one** category, in this priority order:
 ### Breaking Changes override
 If a PR matches any category above but also carries any breaking signal (label `breaking-change`, `!` in title prefix, or `BREAKING CHANGE:` in body), reclassify it to ⚠️ **Breaking Changes** regardless of other signals.
 
+### Epic / Jira grouping
+When two or more PRs share the **same Jira key prefix** (e.g., `DEVX-`), the **same GitHub milestone**, or a **shared non-taxonomy label** (e.g., `qtest`, `figma`), group them under a single parent entry with sub-bullets:
+
+```
+- <parent description> in #N, #M
+  > <combined summary>
+  - #N — <sub-entry for PR N>
+  - #M — <sub-entry for PR M>
+```
+
+Grouping is **optional when only 2 PRs share a signal** and **required when 3 or more** share the same signal. Grouped PRs still appear individually in `## 📋 All PRs in Scope`.
+
 ---
 
 ## Entry format
@@ -148,9 +179,10 @@ If a PR matches any category above but also carries any breaking signal (label `
 
 Rules:
 - **description**: Present tense, imperative voice (`Add`, `Fix`, `Improve`, `Remove`). 10–120 characters. Write for **users**, not implementers.
-- **pr-summary**: 1–2 sentences extracted or summarized from the PR body describing what changed and its impact on the codebase. Omit the `> <pr-summary>` line entirely if the PR body is empty or contains only template boilerplate. Max 200 characters. Apply secret scrubbing.
+- **pr-summary**: 1–2 sentences extracted or summarized from the PR body describing what changed and its impact on the codebase. If the PR body is empty or contains only template boilerplate, use the Jira story description from `get_issue` as the fallback. Omit the `> <pr-summary>` line entirely only when both the PR body and Jira description are absent. Max 200 characters. Apply secret scrubbing.
 - Backticks for commands, flags, env vars, file paths, package names.
 - Append `— closes #<issue>` only when body contains `Closes|Fixes|Resolves #NNN`.
+- Append `— [KEY](https://takeda.atlassian.net/browse/KEY)` when a Jira key is extracted from the PR title or body. Use the story title from `get_issue` as the link text when available. Never invent Jira URLs — only link keys found in PR content.
 - Append `— Thanks @<handle>!` only when author is not an onetakeda org member.
 
 ---
@@ -234,7 +266,7 @@ Emit three fenced blocks in this order.
 
 ### Block 1 — Markdown release notes
 
-Category order (fixed): 🌟 Highlights → ⚠️ Breaking Changes → ✨ Features → 🚀 Improvements → 🐛 Fixes → 🔒 Security → 📚 Docs & Chores → 📦 Dependencies → �️ Deployment Notes → �🔍 Needs Human Review.
+Category order (fixed): 📋 Executive Summary → 🌟 Highlights → ⚠️ Breaking Changes → ✨ Features → 🚀 Improvements → 🐛 Fixes → 🔒 Security → 📚 Docs & Chores → 📦 Dependencies → 🗒️ Deployment Notes → 🔗 Linked Work Items → 📋 All PRs in Scope → 🔍 Needs Human Review.
 
 Within each category: **merge date descending**.
 Omit any category that has no entries — do **not** render the heading or a `_None_` placeholder.
@@ -244,9 +276,21 @@ Omit any category that has no entries — do **not** render the heading or a `_N
 
 _Range: <base-ref> → <head-ref>  (or <since> → <until>)_
 _Generated: <UTC timestamp>_
+_Scope: {N} PRs analyzed — {B} breaking · {V} validation-impact · {S} skipped_
+
+## 📋 Executive Summary
+_2–3 sentences identifying the dominant delivery theme, major areas changed, and any risk signals (breaking changes, GxP-touched PRs, open Jira tickets). Written for a non-technical stakeholder audience._
+
+**Generation rules:**
+- Identify the 1–2 dominant delivery pillars from the classified PRs (e.g., "agent catalog expansion", "pipeline hardening").
+- Name the major feature areas by their user-facing purpose, not implementation detail.
+- If any breaking changes exist, state the count and nature in one sentence.
+- If any GxP/SOX-touched or open-Jira-ticket PRs exist, mention that human review is required.
+- Tone: confident, past-tense, stakeholder-appropriate. No bullet points — prose only.
 
 ## 🌟 Highlights
-- Up to 5 hand-picked items from Features and Breaking Changes.
+_Up to 5 hand-picked items from Features and Breaking Changes. Items listed here must **not** be repeated in their category section — use `→ See #N in ✨ Features` in the category instead._
+- <entry>
 
 ## ⚠️ Breaking Changes
 - <entry> — Migration: <hint if available>
@@ -285,48 +329,29 @@ _Generated: <UTC timestamp>_
 | `migrations/example.sql` | #N | Run DB migration |
 | `package.json` | #N | Run `npm install` |
 
+## � Linked Work Items
+_Populated only when Jira keys are found in PR titles or bodies. Omit this section entirely if no keys were found._
+
+| Jira Ticket | Story Title | Status | PR(s) |
+|-------------|-------------|--------|-------|
+| [KEY](https://takeda.atlassian.net/browse/KEY) | <story title from get_issue> | Done | #N |
+
+## 📋 All PRs in Scope
+_Every PR analyzed — skipped PRs marked ⏭️. Required for audit traceability._
+
+| # | Title | Author | Merged | Category |
+|---|-------|--------|--------|----------|
+| #N | <title> | @handle | YYYY-MM-DD | ✨ Features |
+| #N | <title> | @handle | YYYY-MM-DD | ⏭️ Skipped — <reason> |
+
 ## 🔍 Needs Human Review
 - [???] <entry> — Reason: <one line>
 - <entry> [Validation Impact] — Paths: `validation/foo.py`
 
 ---
-_Draft — pending human QA review. Not a validation signoff. Generated by the onetakeda Release Notes Drafter skill (v5.0.0)._
+_Draft — pending human QA review. Not a validation signoff. Generated by the onetakeda Release Notes Drafter skill (v6.0.0)._
 ````
 
-### Block 2 — JSON release note metadata
-
-```json
-[
-  {
-    "pr": 1421,
-    "title": "Cache PR diffs to halve release-notes runtime",
-    "author": "mzajko",
-    "mergeDate": "2026-06-28T14:22:00Z",
-    "category": "Improvements",
-    "labels": ["enhancement"],
-    "linkedIssues": [1387],
-    "breaking": false,
-    "validationImpact": false,
-    "confidence": "high",
-    "entry": "Cache PR diffs to halve release-notes runtime by @mzajko in #1421",
-    "prSummary": "Caches PR diff payloads to disk so repeated runs skip redundant API calls, reducing runtime by ~50%."
-  }
-]
-```
-
-### Block 3 — JSON skipped PRs
-
-```json
-[
-  {
-    "pr": 1418,
-    "title": "ci: update node version in workflow",
-    "author": "devbot",
-    "mergeDate": "2026-06-27T09:10:00Z",
-    "skipReason": "Pure CI/CD config change — `.github/workflows/` only, no behavior change"
-  }
-]
-```
 
 ---
 
@@ -334,22 +359,23 @@ _Draft — pending human QA review. Not a validation signoff. Generated by the o
 
 | Condition | Behaviour |
 |---|---|
-| PAT not provided | Halt — do not run the Python script. Re-prompt the user to supply their PAT |
-| Python script exits non-zero | Show the stderr output and halt. Do not produce partial release notes |
-| HTTP 401 Unauthorized | Script raises `HTTPError 401` — tell the user their PAT is invalid or expired |
-| HTTP 403 insufficient scope | Script raises `HTTPError 403` — tell the user to add `repo` / `public_repo` and `read:org` scopes |
-| HTTP 403/429 rate-limited | Script raises `HTTPError 403/429` — surface `X-RateLimit-Reset`, halt |
-| HTTP 404 on repo | Script raises `HTTPError 404` — confirm owner/repo with the user |
+| GitHub MCP 401 Unauthorized | Tell the user their `GITHUB_PERSONAL_ACCESS_TOKEN` is invalid or expired — restart VS Code after updating |
+| GitHub MCP 403 insufficient scope | Tell the user to add `repo` / `public_repo` and `read:org` scopes to their PAT |
+| GitHub MCP 403/429 rate-limited | Surface `X-RateLimit-Reset` header value, halt |
+| GitHub MCP 404 on repo | Confirm owner/repo spelling with the user |
 | PR list returns 0 results | Ask user to verify the range/time-window |
 | PR body empty / unparseable | Use title + diff heuristic only; set `confidence: "low"` |
-| Author org-membership `HTTPError 404` | Treat as external; append `— Thanks @<handle>!`; set `"orgMember": false` |
+| Author org-membership 404 | Treat as external; append `— Thanks @<handle>!`; set `"orgMember": false` |
+| `atlassian/atlassian-mcp-server` unavailable | Skip Jira enrichment silently; set `jiraEnriched: false` in JSON; do not halt |
+| `mcp_atlassian-mcp_getJiraIssue` returns 404 | Key does not exist or no access — omit Jira link for that entry; log in JSON |
+| Jira ticket status not Done/Closed | Flag PR as `[???]` with reason "Linked Jira ticket still open" |
 
 ---
 
 ## Self-check before responding
 
-- [ ] PAT collected via MCP env var or user prompt — Python script or MCP tools used, not PowerShell.
-- [ ] No confirmation prompt shown after PAT/MCP collection.
+- [ ] Auth handled entirely via MCP connections — no PAT prompt, no Python script, no terminal commands.
+- [ ] No confirmation prompt shown after MCP auth.
 - [ ] Scope confirmation "Analyzing N PRs…" printed before drafting.
 - [ ] Deployment-sensitive files checked; Deployment Notes included only if user confirmed.
 - [ ] All three fenced blocks present and valid.
@@ -360,3 +386,9 @@ _Draft — pending human QA review. Not a validation signoff. Generated by the o
 - [ ] `[???]` entries appear in their category **and** in `🔍 Needs Human Review`.
 - [ ] Breaking-change entries appear in their primary category **and** in `⚠️ Breaking Changes`.
 - [ ] Secret scrubbing ran on all quoted PR content.
+- [ ] Jira enrichment attempted for all PRs with extractable keys; `jiraEnriched` set in JSON.
+- [ ] PRs linked to open Jira tickets flagged as `[???]` in Needs Human Review.
+- [ ] `## 🔗 Linked Work Items` table present when Jira keys were found; omitted when none.
+- [ ] `## 📋 All PRs in Scope` table includes every PR in scope including skipped ones.
+- [ ] Highlights items NOT repeated verbatim in their category section.
+- [ ] `## 📋 Executive Summary` present and describes dominant theme + risk signals.
