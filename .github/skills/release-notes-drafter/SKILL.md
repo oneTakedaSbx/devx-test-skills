@@ -10,7 +10,7 @@ description: >
   Drafting tool only — does not make compliance determinations.
 owner: DevX (ICC / DD&T)
 scope: org-wide
-version: 6.1.0
+version: 7.0.0
 contact: devx@takeda.com
 ---
 
@@ -27,14 +27,15 @@ JSON skipped PRs.
 
 - Make compliance or validation determinations.
 - Edit source code.
-- Call external systems beyond GitHub and Atlassian/Jira.
+- Call external systems beyond GitHub.
+- Look up or link Jira / work-item tickets.
 - Invent PR numbers, authors, dates, or issue links.
 
 ---
 
 ## Tool mapping
 
-GitHub and Jira data are fetched via their respective MCP servers. Auth is handled by the MCP connections — no PAT prompt, no Python script, no terminal commands.
+GitHub data is fetched via the GitHub MCP server. Auth is handled by the MCP connection — no PAT prompt, no Python script, no terminal commands.
 
 ### GitHub MCP (`@modelcontextprotocol/server-github`)
 | MCP tool | Purpose |
@@ -44,12 +45,6 @@ GitHub and Jira data are fetched via their respective MCP servers. Auth is handl
 | `get_pull_request_files(owner, repo, pull_number)` | File-level diff — path, status, additions, deletions |
 | `search_issues(q="is:pr is:merged repo:owner/repo merged:since..until")` | Fallback when primary returns 0 results |
 | `list_org_members(org)` / `get_org_member(org, username)` | Resolve org membership for external-contributor detection |
-
-### Atlassian MCP (`atlassian/atlassian-mcp-server` v1.1.1 — HTTP `https://mcp.atlassian.com/v1/mcp`)
-| MCP tool | Purpose |
-|---|---|
-| `mcp_atlassian-mcp_getJiraIssue(issueIdOrKey)` | Fetch issue — title, description, acceptance criteria, sprint, epic, and current status |
-| `mcp_atlassian-mcp_searchJiraIssuesUsingJql(jql)` | Look up epic or sprint context for a batch of ticket keys |
 
 ---
 
@@ -87,7 +82,6 @@ Also confirm the **repository** (`owner/repo` format, e.g. `onetakeda/my-service
    - Call `get_pull_request` (title, body, author, labels, milestone, merge date).
    - Call `get_pull_request_files` (path, status, additions, deletions).
    - Resolve org membership via `get_org_member`.
-   - **Jira enrichment:** Extract any `[A-Z]+-[0-9]+` key from the PR title or body. For each key found, call `mcp_atlassian-mcp_getJiraIssue(issueIdOrKey=key)` to retrieve the story title, description, acceptance criteria, and current status in a single call. If the returned status is not Done/Closed, flag the PR as `[???]` with reason "Linked Jira ticket still open". If the Atlassian MCP is unavailable, skip silently and set `jiraEnriched: false` in JSON output.
 
 4. **Confirm scope** — Print once:
    > `Analyzing {N} PRs merged between {start} and {end}…`
@@ -121,7 +115,7 @@ Also confirm the **repository** (`owner/repo` format, e.g. `onetakeda/my-service
     > Would you like me to:
     > 1. Convert this to a **GitHub Release body** (strip emoji, reformat as plain prose)
     > 2. Generate a **5-sentence stakeholder email** summary
-    > 3. Export as a **Jira comment block** (plain text, ticket-linked)
+    > 3. Export as a **plain-text summary** (no emoji, no Markdown — suitable for pasting into tickets or chat)
 
     Wait for user selection. Do not proceed automatically.
 
@@ -162,17 +156,17 @@ Every PR goes into **exactly one** category, in this priority order:
 **Path-sensitivity check (applies to every Priority 3 result):** for each `renamed` file, check whether the old path appears in any other file in the repo (configs, `mcp.json`, instructions, scripts, READMEs). A hit means functional impact — do not classify as 📚 Docs & Chores.
 
 ### PR hygiene advisory
-If **any** PR in scope reached Priority 3 because it had no taxonomy label and no conventional-commit prefix (e.g., titles like `Feature/devx 976`, `Fix/coding standards`), or has no extractable Jira key, add a single advisory bullet at the end of `## 🔍 Needs Human Review`:
+If **any** PR in scope reached Priority 3 because it had no taxonomy label and no conventional-commit prefix (e.g., titles like `Feature/devx 976`, `Fix/coding standards`), add a single advisory bullet at the end of `## 🔍 Needs Human Review`:
 
 ```
-- ℹ️ PR hygiene: {X} of {N} PRs lacked a conventional-commit prefix or taxonomy label (#N, #M); {Y} lacked a Jira key (#N). Consider enforcing `feat:`/`fix:`/`docs:`/`chore:` prefixes and a `KEY-123` reference in PR titles.
+- ℹ️ PR hygiene: {X} of {N} PRs lacked a conventional-commit prefix or taxonomy label (#N, #M). Consider enforcing `feat:`/`fix:`/`docs:`/`chore:` prefixes in PR titles.
 ```
 
 ### Breaking Changes override
 If a PR matches any category above but also carries any breaking signal (label `breaking-change`, `!` in title prefix, or `BREAKING CHANGE:` in body), reclassify it to ⚠️ **Breaking Changes** regardless of other signals.
 
-### Epic / Jira grouping
-When two or more PRs share the **same Jira key prefix** (e.g., `DEVX-`), the **same GitHub milestone**, or a **shared non-taxonomy label** (e.g., `qtest`, `figma`), group them under a single parent entry with sub-bullets:
+### Milestone / label grouping
+When two or more PRs share the **same GitHub milestone** or a **shared non-taxonomy label** (e.g., `qtest`, `figma`), group them under a single parent entry with sub-bullets:
 
 ```
 - <parent description> in #N, #M
@@ -194,10 +188,10 @@ Grouping is **optional when only 2 PRs share a signal** and **required when 3 or
 
 Rules:
 - **description**: Present tense, imperative voice (`Add`, `Fix`, `Improve`, `Remove`). 10–120 characters. Write for **users**, not implementers.
-- **pr-summary**: 1–2 sentences extracted or summarized from the PR body describing what changed and its impact on the codebase. If the PR body is empty or contains only template boilerplate, use the Jira story description from `get_issue` as the fallback. Omit the `> <pr-summary>` line entirely only when both the PR body and Jira description are absent. Max 200 characters. Apply secret scrubbing.
+- **pr-summary**: 1–2 sentences extracted or summarized from the PR body describing what changed and its impact on the codebase. If the PR body is empty or contains only template boilerplate, summarize from the title and changed files instead. Omit the `> <pr-summary>` line entirely only when nothing meaningful can be derived. Max 200 characters. Apply secret scrubbing.
 - Backticks for commands, flags, env vars, file paths, package names.
 - Append `— closes #<issue>` only when body contains `Closes|Fixes|Resolves #NNN`.
-- Append `— [KEY](https://takeda.atlassian.net/browse/KEY)` when a Jira key is extracted from the PR title or body. Use the story title from `get_issue` as the link text when available. Never invent Jira URLs — only link keys found in PR content.
+- Do **not** link to Jira or any external ticket system. Ticket keys that appear in PR titles may be left in the title verbatim but must not be turned into links.
 - Append `— Thanks @<handle>!` only when author is not an onetakeda org member.
 
 ---
@@ -282,14 +276,14 @@ Emit three fenced blocks in this order.
 
 ### Block 1 — Markdown release notes
 
-Category order (fixed): 📋 Executive Summary → 🌟 Highlights → ⚠️ Breaking Changes → ✨ Features → 🚀 Improvements → 🐛 Fixes → 🔒 Security → 📚 Docs & Chores → 📦 Dependencies → 🗒️ Deployment Notes → 🔗 Linked Work Items → 📋 All PRs in Scope → 🔍 Needs Human Review.
+Category order (fixed): 📋 Executive Summary → 🌟 Highlights → ⚠️ Breaking Changes → ✨ Features → 🚀 Improvements → 🐛 Fixes → 🔒 Security → 📚 Docs & Chores → 📦 Dependencies → 🗒️ Deployment Notes →  All PRs in Scope → 🔍 Needs Human Review.
 
 Within each category: **merge date descending**.
 Omit any category that has no entries — do **not** render the heading or a `_None_` placeholder.
 
 **🌟 Highlights is mandatory** whenever ✨ Features or ⚠️ Breaking Changes has at least one entry. Omit it only when both are empty.
 
-**Encoding:** all section headings must use the exact emoji shown in the template below (`📋 🌟 ⚠️ ✨ 🚀 🐛 🔒 📚 📦 🗒️ 🔗 📋 🔍`). Before saving, verify no heading contains a replacement character (`�`) or a missing emoji; if it does, rewrite the heading from the template.
+**Encoding:** all section headings must use the exact emoji shown in the template below (`📋 🌟 ⚠️ ✨ 🚀 🐛 🔒 📚 📦 🗒️  🔍`). Before saving, verify no heading contains a replacement character (`�`) or a missing emoji; if it does, rewrite the heading from the template.
 
 ````markdown
 # Release Notes — <repo> — <head-ref or window>
@@ -299,13 +293,13 @@ _Generated: <UTC timestamp>_
 _Scope: {N} PRs analyzed — {B} breaking · {V} validation-impact · {S} skipped_
 
 ## 📋 Executive Summary
-_2–3 sentences identifying the dominant delivery theme, major areas changed, and any risk signals (breaking changes, GxP-touched PRs, open Jira tickets). Written for a non-technical stakeholder audience._
+_2–3 sentences identifying the dominant delivery theme, major areas changed, and any risk signals (breaking changes, GxP-touched PRs, uncertain classifications). Written for a non-technical stakeholder audience._
 
 **Generation rules:**
 - Identify the 1–2 dominant delivery pillars from the classified PRs (e.g., "agent catalog expansion", "pipeline hardening").
 - Name the major feature areas by their user-facing purpose, not implementation detail.
 - If any breaking changes exist, state the count and nature in one sentence.
-- If any GxP/SOX-touched or open-Jira-ticket PRs exist, mention that human review is required.
+- If any GxP/SOX-touched or `[???]`-flagged PRs exist, mention that human review is required.
 - Tone: confident, past-tense, stakeholder-appropriate. No bullet points — prose only.
 
 ## 🌟 Highlights
@@ -349,15 +343,7 @@ _Required when ✨ Features or ⚠️ Breaking Changes is non-empty. Up to 5 han
 | `migrations/example.sql` | #N | Run DB migration |
 | `package.json` | #N | Run `npm install` |
 
-## 🔗 Linked Work Items
-_Populated only when at least one Jira key is found in PR titles or bodies. Omit this section entirely if no keys were found in any PR. When the section is rendered, every non-skipped PR **without** a Jira key gets a `— (no Jira key)` row so traceability gaps are visible, and is also listed in 🔍 Needs Human Review with reason "No Jira key in PR title or body"._
-
-| Jira Ticket | Story Title | Status | PR(s) |
-|-------------|-------------|--------|-------|
-| [KEY](https://takeda.atlassian.net/browse/KEY) | <story title from get_issue> | Done | #N |
-| — (no Jira key) | — | — | #N |
-
-## 📋 All PRs in Scope
+##  All PRs in Scope
 _Every PR analyzed — skipped PRs marked ⏭️. Required for audit traceability._
 
 | # | Title | Author | Merged | Category |
@@ -369,11 +355,10 @@ _Every PR analyzed — skipped PRs marked ⏭️. Required for audit traceabilit
 ## 🔍 Needs Human Review
 - [???] <entry> — Reason: <one line>
 - <entry> [Validation Impact] — Paths: `validation/foo.py`
-- <entry> — Reason: No Jira key in PR title or body
 - ℹ️ PR hygiene: <advisory line per Classification § PR hygiene advisory, if applicable>
 
 ---
-_Draft — pending human QA review. Not a validation signoff. Generated by the onetakeda Release Notes Drafter skill (v6.1.0)._
+_Draft — pending human QA review. Not a validation signoff. Generated by the onetakeda Release Notes Drafter skill (v7.0.0)._
 ````
 
 
@@ -390,9 +375,6 @@ _Draft — pending human QA review. Not a validation signoff. Generated by the o
 | PR list returns 0 results | Ask user to verify the range/time-window |
 | PR body empty / unparseable | Use title + diff heuristic only; set `confidence: "low"` |
 | Author org-membership 404 | Treat as external; append `— Thanks @<handle>!`; set `"orgMember": false` |
-| `atlassian/atlassian-mcp-server` unavailable | Skip Jira enrichment silently; set `jiraEnriched: false` in JSON; do not halt |
-| `mcp_atlassian-mcp_getJiraIssue` returns 404 | Key does not exist or no access — omit Jira link for that entry; log in JSON |
-| Jira ticket status not Done/Closed | Flag PR as `[???]` with reason "Linked Jira ticket still open" |
 
 ---
 
@@ -410,9 +392,7 @@ _Draft — pending human QA review. Not a validation signoff. Generated by the o
 - [ ] `[???]` entries appear in their category **and** in `🔍 Needs Human Review`.
 - [ ] Breaking-change entries appear in their primary category **and** in `⚠️ Breaking Changes`.
 - [ ] Secret scrubbing ran on all quoted PR content.
-- [ ] Jira enrichment attempted for all PRs with extractable keys; `jiraEnriched` set in JSON.
-- [ ] PRs linked to open Jira tickets flagged as `[???]` in Needs Human Review.
-- [ ] `## 🔗 Linked Work Items` table present when Jira keys were found; omitted when none.
+- [ ] No Jira or external ticket links anywhere in the output.
 - [ ] `## 📋 All PRs in Scope` table includes every PR in scope including skipped ones.
 - [ ] Highlights items NOT repeated verbatim in their category section.
 - [ ] `## 🌟 Highlights` present whenever ✨ Features or ⚠️ Breaking Changes is non-empty.
@@ -420,7 +400,6 @@ _Draft — pending human QA review. Not a validation signoff. Generated by the o
 - [ ] Every `[???]` PR carries the flag in **all** sections where it appears (category, Highlights, All PRs in Scope, Needs Human Review).
 - [ ] No section heading contains `�` or a missing emoji; file written as UTF-8.
 - [ ] Renames touching runtime-referenced paths classified as 🚀 Improvements or `[???]` — never 📚 Docs & Chores.
-- [ ] Non-skipped PRs without a Jira key listed in Linked Work Items as `— (no Jira key)` and in Needs Human Review.
-- [ ] PR hygiene advisory added when any PR lacked a prefix/label or Jira key.
+- [ ] PR hygiene advisory added when any PR lacked a prefix/label.
 - [ ] Filename matches exactly one pattern from Workflow step 10 (shorthand resolved to dates first).
 - [ ] `classificationTier` recorded per PR in JSON output.
