@@ -10,7 +10,7 @@ description: >
   Drafting tool only — does not make compliance determinations.
 owner: DevX (ICC / DD&T)
 scope: org-wide
-version: 6.0.0
+version: 6.1.0
 contact: devx@takeda.com
 ---
 
@@ -95,19 +95,24 @@ Also confirm the **repository** (`owner/repo` format, e.g. `onetakeda/my-service
 
 5. **Check deployment-sensitive files** — Scan changed paths for migrations, dependency manifests, config files, API schemas. If any match, ask the user **once** whether to include a `🗒️ Deployment Notes` section.
 
-6. **Classify** each PR into taxonomy (see Classification section).
+6. **Classify** each PR into taxonomy (see Classification section). Record which priority tier produced the result (`classificationTier: 1 | 2 | 3`) in JSON output.
 
 7. **Apply skip rules** (see Skip Rules section). Never silently drop a PR.
 
-8. **Flag** uncertainty, breaking changes, and validation impact (see Flags section).
+8. **Flag** uncertainty, breaking changes, and validation impact (see Flags section). Once a PR is flagged `[???]`, the flag is a property of the PR — it must be rendered on **every** occurrence of that PR in Block 1 (category section, Highlights, All PRs in Scope, Needs Human Review). Never show a flagged PR unflagged anywhere.
 
 9. **Emit** the three output blocks (see Output section).
 
-10. **Save to file** — derive the filename from repo + scope and write using `create_file`:
-    - Month window → `release-notes-<REPO>-YYYY-MM.md`
-    - Ref range → `release-notes-<REPO>-<base>-to-<head>.md`
-    - Quarter shorthand → `release-notes-<REPO>-YYYY-QN.md`
+10. **Save to file** — derive the filename from repo + scope using the table below and write using `create_file`. Resolve shorthand (`last 2 weeks`, `last month`, etc.) to concrete dates **first**, then apply the matching rule. `<REPO>` is the repository name only (no owner), exactly as GitHub spells it.
 
+    | Scope as resolved | Filename |
+    |---|---|
+    | Ref range | `release-notes-<REPO>-<base>-to-<head>.md` |
+    | Whole calendar month (1st → last day) | `release-notes-<REPO>-YYYY-MM.md` |
+    | Whole calendar quarter | `release-notes-<REPO>-YYYY-QN.md` |
+    | Any other date window (incl. `last N weeks/days`) | `release-notes-<REPO>-YYYY-MM-DD-to-YYYY-MM-DD.md` |
+
+    No other filename patterns are permitted. Write the file as **UTF-8** so emoji headers render intact.
     Write **only Block 1 (Markdown release notes)** into the file — do not include the JSON blocks.
     Confirm in chat with: `Release notes saved to release-notes-<REPO>-<LABEL>.md.`
     Do **not** re-print the full content in chat.
@@ -151,7 +156,17 @@ Every PR goes into **exactly one** category, in this priority order:
 | Only `*.md`, `docs/**` | 📚 Docs & Chores |
 | Only `package*.json`, `go.mod`, `requirements.txt`, `pom.xml`, `*.csproj` | 📦 Dependencies |
 | Only `**/*test*`, `**/__tests__/**` | 📚 Docs & Chores |
+| Renames / moves of files or folders that are referenced at runtime (MCP server or tool directories, script entry points, config/skill/agent paths, fetch URLs, import paths) | 🚀 Improvements — a rename is **never** Docs & Chores just because the diff has no content changes. If the functional impact cannot be confirmed from the body or referencing files, mark `[???]` with reason "Path rename may affect runtime references" |
 | Mixed / production code | Pick dominant signal; classify as 🚀 Improvements if purpose is clear; mark `[???]` only if purpose cannot be determined from any signal |
+
+**Path-sensitivity check (applies to every Priority 3 result):** for each `renamed` file, check whether the old path appears in any other file in the repo (configs, `mcp.json`, instructions, scripts, READMEs). A hit means functional impact — do not classify as 📚 Docs & Chores.
+
+### PR hygiene advisory
+If **any** PR in scope reached Priority 3 because it had no taxonomy label and no conventional-commit prefix (e.g., titles like `Feature/devx 976`, `Fix/coding standards`), or has no extractable Jira key, add a single advisory bullet at the end of `## 🔍 Needs Human Review`:
+
+```
+- ℹ️ PR hygiene: {X} of {N} PRs lacked a conventional-commit prefix or taxonomy label (#N, #M); {Y} lacked a Jira key (#N). Consider enforcing `feat:`/`fix:`/`docs:`/`chore:` prefixes and a `KEY-123` reference in PR titles.
+```
 
 ### Breaking Changes override
 If a PR matches any category above but also carries any breaking signal (label `breaking-change`, `!` in title prefix, or `BREAKING CHANGE:` in body), reclassify it to ⚠️ **Breaking Changes** regardless of other signals.
@@ -205,6 +220,7 @@ The following PR types are **skipped from release notes** but must appear in Blo
 
 ### Uncertainty
 - Prefix with `[???]` and copy to `## 🔍 Needs Human Review` with a one-line reason.
+- The `[???]` prefix is **global** for that PR: render it in the category entry, in 🌟 Highlights (if selected), in the `Category` column of 📋 All PRs in Scope (e.g., `✨ Features [???]`), and in 🔍 Needs Human Review. A PR must never appear flagged in one section and unflagged in another.
 - Set `confidence: "low"` in JSON output.
 
 ### Validation impact (GxP / SOX path detection)
@@ -271,6 +287,10 @@ Category order (fixed): 📋 Executive Summary → 🌟 Highlights → ⚠️ Br
 Within each category: **merge date descending**.
 Omit any category that has no entries — do **not** render the heading or a `_None_` placeholder.
 
+**🌟 Highlights is mandatory** whenever ✨ Features or ⚠️ Breaking Changes has at least one entry. Omit it only when both are empty.
+
+**Encoding:** all section headings must use the exact emoji shown in the template below (`📋 🌟 ⚠️ ✨ 🚀 🐛 🔒 📚 📦 🗒️ 🔗 📋 🔍`). Before saving, verify no heading contains a replacement character (`�`) or a missing emoji; if it does, rewrite the heading from the template.
+
 ````markdown
 # Release Notes — <repo> — <head-ref or window>
 
@@ -289,7 +309,7 @@ _2–3 sentences identifying the dominant delivery theme, major areas changed, a
 - Tone: confident, past-tense, stakeholder-appropriate. No bullet points — prose only.
 
 ## 🌟 Highlights
-_Up to 5 hand-picked items from Features and Breaking Changes. Items listed here must **not** be repeated in their category section — use `→ See #N in ✨ Features` in the category instead._
+_Required when ✨ Features or ⚠️ Breaking Changes is non-empty. Up to 5 hand-picked items from those two categories. Items listed here must **not** be repeated in their category section — use `→ See #N in ✨ Features` in the category instead. Keep the `[???]` prefix on any flagged item._
 - <entry>
 
 ## ⚠️ Breaking Changes
@@ -320,7 +340,7 @@ _Up to 5 hand-picked items from Features and Breaking Changes. Items listed here
 - <entry>
   > <pr-summary>
 
-## �️ Deployment Notes
+## 🗒️ Deployment Notes
 
 > *(Included only when deployment-sensitive files were detected and the user confirmed.)*
 
@@ -329,12 +349,13 @@ _Up to 5 hand-picked items from Features and Breaking Changes. Items listed here
 | `migrations/example.sql` | #N | Run DB migration |
 | `package.json` | #N | Run `npm install` |
 
-## � Linked Work Items
-_Populated only when Jira keys are found in PR titles or bodies. Omit this section entirely if no keys were found._
+## 🔗 Linked Work Items
+_Populated only when at least one Jira key is found in PR titles or bodies. Omit this section entirely if no keys were found in any PR. When the section is rendered, every non-skipped PR **without** a Jira key gets a `— (no Jira key)` row so traceability gaps are visible, and is also listed in 🔍 Needs Human Review with reason "No Jira key in PR title or body"._
 
 | Jira Ticket | Story Title | Status | PR(s) |
 |-------------|-------------|--------|-------|
 | [KEY](https://takeda.atlassian.net/browse/KEY) | <story title from get_issue> | Done | #N |
+| — (no Jira key) | — | — | #N |
 
 ## 📋 All PRs in Scope
 _Every PR analyzed — skipped PRs marked ⏭️. Required for audit traceability._
@@ -342,14 +363,17 @@ _Every PR analyzed — skipped PRs marked ⏭️. Required for audit traceabilit
 | # | Title | Author | Merged | Category |
 |---|-------|--------|--------|----------|
 | #N | <title> | @handle | YYYY-MM-DD | ✨ Features |
+| #N | <title> | @handle | YYYY-MM-DD | ✨ Features [???] |
 | #N | <title> | @handle | YYYY-MM-DD | ⏭️ Skipped — <reason> |
 
 ## 🔍 Needs Human Review
 - [???] <entry> — Reason: <one line>
 - <entry> [Validation Impact] — Paths: `validation/foo.py`
+- <entry> — Reason: No Jira key in PR title or body
+- ℹ️ PR hygiene: <advisory line per Classification § PR hygiene advisory, if applicable>
 
 ---
-_Draft — pending human QA review. Not a validation signoff. Generated by the onetakeda Release Notes Drafter skill (v6.0.0)._
+_Draft — pending human QA review. Not a validation signoff. Generated by the onetakeda Release Notes Drafter skill (v6.1.0)._
 ````
 
 
@@ -391,4 +415,12 @@ _Draft — pending human QA review. Not a validation signoff. Generated by the o
 - [ ] `## 🔗 Linked Work Items` table present when Jira keys were found; omitted when none.
 - [ ] `## 📋 All PRs in Scope` table includes every PR in scope including skipped ones.
 - [ ] Highlights items NOT repeated verbatim in their category section.
+- [ ] `## 🌟 Highlights` present whenever ✨ Features or ⚠️ Breaking Changes is non-empty.
 - [ ] `## 📋 Executive Summary` present and describes dominant theme + risk signals.
+- [ ] Every `[???]` PR carries the flag in **all** sections where it appears (category, Highlights, All PRs in Scope, Needs Human Review).
+- [ ] No section heading contains `�` or a missing emoji; file written as UTF-8.
+- [ ] Renames touching runtime-referenced paths classified as 🚀 Improvements or `[???]` — never 📚 Docs & Chores.
+- [ ] Non-skipped PRs without a Jira key listed in Linked Work Items as `— (no Jira key)` and in Needs Human Review.
+- [ ] PR hygiene advisory added when any PR lacked a prefix/label or Jira key.
+- [ ] Filename matches exactly one pattern from Workflow step 10 (shorthand resolved to dates first).
+- [ ] `classificationTier` recorded per PR in JSON output.
