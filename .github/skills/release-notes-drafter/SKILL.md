@@ -1,8 +1,8 @@
 ---
 name: release-notes-drafter
-description: >
+description:
   Drafts structured, audit-friendly release notes for any onetakeda repository.
-  Trigger intents: "draft release notes", "generate changelog", "what changed between
+  Trigger intents:- "draft release notes", "generate changelog", "what changed between
   v1 and v2", "summarize merged PRs", "prepare release notes for this sprint",
   "what's new in this release", "write the CHANGELOG entry",
   "list PRs merged since last release", "get/fetch/show pull requests from a repo",
@@ -10,8 +10,6 @@ description: >
   Drafting tool only — does not make compliance determinations.
 owner: DevX (ICC / DD&T)
 scope: org-wide
-version: 7.0.0
-contact: devx@takeda.com
 ---
 
 # Skill: Release Notes Drafter — onetakeda
